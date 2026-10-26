@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Serren Luxx's Portable Text Vault</title>
+<style>
+:root {
+  --bg: #e2dfd0;
+  --text: #4e4b4b;
+  --border: #bfafb2;
+  --accent: #bd466e;
+  --panel: rgba(255,255,255,.25);
+  --field: rgba(255,255,255,.48);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 24px 14px; min-height: 100vh;
+  background: var(--bg); color: var(--text);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { width: 100%; max-width: 720px; margin: 0 auto; }
+header { text-align: center; margin: 8px 0 26px; }
+h1 { color: var(--accent); font-size: clamp(1.2rem, 3.5vw, 1.45rem); margin: 0 0 8px; }
+h2 { color: var(--accent); font-size: 1.2rem; margin: 0 0 14px; }
+p { margin: 8px 0 14px; }
+a { color: var(--accent); }
+.intro { max-width: 600px; margin: 0 auto; }
+.panel {
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--panel); padding: 22px; margin: 18px 0;
+}
+label { display: block; font-weight: 650; margin: 12px 0 6px; }
+textarea, input[type="password"], input[type="file"] {
+  display: block; width: 100%; max-width: 100%; color: var(--text);
+  background: var(--field); border: 1px solid var(--border);
+  border-radius: 7px; padding: 11px; font: inherit;
+}
+textarea { min-height: 130px; resize: vertical; }
+input[type="file"] { padding: 9px; }
+input:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 3px solid var(--accent); outline-offset: 2px;
+}
+button {
+  display: block; width: 100%; margin-top: 14px; padding: 12px 14px;
+  border: 1px solid var(--accent); border-radius: 7px;
+  background: var(--accent); color: #fff; font: inherit; font-weight: 700;
+  cursor: pointer;
+}
+button.secondary { background: transparent; color: var(--accent); }
+button:disabled { opacity: .6; cursor: wait; }
+.status { display: none; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; overflow-wrap: anywhere; }
+.status.show { display: block; }
+.result { display: none; margin-top: 18px; }
+.small { font-size: .9rem; }
+.warning { border-left: 3px solid var(--accent); padding-left: 12px; }
+footer { text-align: center; font-size: .9rem; margin: 28px 0 8px; }
+footer a { font-weight: 700; }
+hr { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }
+@media (max-width: 480px) { .panel { padding: 16px; } body { padding-inline: 10px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Serren Luxx's Portable Text Vault</h1>
+    <p class="intro small">Encrypt text into a file or unlock a previously encrypted file. The cryptographic operations run in this browser; your text is not intentionally sent anywhere.</p>
+  </header>
+
+  <section class="panel" aria-labelledby="encrypt-heading">
+    <h2 id="encrypt-heading">1. Encrypt new text</h2>
+    <label for="plainText">Text to protect</label>
+    <textarea id="plainText" autocomplete="off" spellcheck="false" placeholder="Enter or paste text here"></textarea>
+    <label for="encryptKey">Master password</label>
+    <input id="encryptKey" type="password" autocomplete="new-password" spellcheck="false" placeholder="Use a long, unique passphrase">
+    <p class="small">This vault uses AES-256-GCM encryption with a random salt and nonce, and PBKDF2-HMAC-SHA-256 with 600,000 iterations for password-based key derivation.</p>
+    <button id="encryptButton" type="button">Encrypt and download vault file</button>
+    <div id="encryptStatus" class="status" role="status" aria-live="polite"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="decrypt-heading">
+    <h2 id="decrypt-heading">2. Decrypt a vault file</h2>
+    <label for="fileInput">Choose an encrypted vault file</label>
+    <input id="fileInput" type="file" accept=".txt,.vault,text/plain,application/octet-stream">
+    <label for="decryptKey">Master password</label>
+    <input id="decryptKey" type="password" autocomplete="current-password" spellcheck="false" placeholder="Enter the password used to encrypt the file">
+    <button id="decryptButton" type="button">Decrypt and show text</button>
+    <div id="decryptStatus" class="status" role="status" aria-live="polite"></div>
+    <div id="resultSection" class="result">
+      <label for="decryptedText">Decrypted text</label>
+      <textarea id="decryptedText" readonly spellcheck="false"></textarea>
+      <button id="copyButton" class="secondary" type="button">Copy decrypted text</button>
+      <div id="copyStatus" class="status" role="status" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <footer><a href="https://serrenluxx.com/">Back to serrenluxx.com</a></footer>
+</main>
+<script>
+"use strict";
+
+const NEW_PREFIX = "SERREN_VAULT_V2:";
+const LEGACY_PREFIX = "VAULT_DATA:";
+const NEW_ITERATIONS = 600000;
+const LEGACY_ITERATIONS = 100000;
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function showStatus(id, message, isError = false) {
+  const element = document.getElementById(id);
+  element.textContent = message;
+  element.classList.add("show");
+  element.style.borderColor = isError ? "var(--accent)" : "var(--border)";
+}
+
+function clearStatus(id) {
+  const element = document.getElementById(id);
+  element.textContent = "";
+  element.classList.remove("show");
+}
+
+function getCrypto() {
+  if (!window.crypto || !window.crypto.subtle || !window.crypto.getRandomValues) {
+    throw new Error("Web Crypto is unavailable in this browser context. Try a current browser.");
+  }
+  return window.crypto;
+}
+
+async function deriveKey(password, salt, iterations) {
+  const cryptoApi = getCrypto();
+  const passwordKey = await cryptoApi.subtle.importKey(
+    "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]
+  );
+  return cryptoApi.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+    passwordKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptAndDownload() {
+  const text = document.getElementById("plainText").value;
+  const password = document.getElementById("encryptKey").value;
+  const button = document.getElementById("encryptButton");
+  clearStatus("encryptStatus");
+
+  if (!text) return showStatus("encryptStatus", "Enter the text you want to protect.", true);
+  if (!password) return showStatus("encryptStatus", "Enter a master password.", true);
+  if (password.length < 14) {
+    return showStatus("encryptStatus", "Use a longer master password. A unique passphrase of several unrelated words is a good starting point.", true);
+  }
+
+  button.disabled = true;
+  button.textContent = "Encrypting…";
+  try {
+    const cryptoApi = getCrypto();
+    const salt = cryptoApi.getRandomValues(new Uint8Array(16));
+    const iv = cryptoApi.getRandomValues(new Uint8Array(12));
+    const key = await deriveKey(password, salt, NEW_ITERATIONS);
+    const ciphertext = new Uint8Array(await cryptoApi.subtle.encrypt(
+      { name: "AES-GCM", iv }, key, new TextEncoder().encode(text)
+    ));
+
+    const payload = new Uint8Array(1 + 4 + salt.length + iv.length + ciphertext.length);
+    payload[0] = 2;
+    new DataView(payload.buffer).setUint32(1, NEW_ITERATIONS, false);
+    payload.set(salt, 5);
+    payload.set(iv, 21);
+    payload.set(ciphertext, 33);
+
+    const blob = new Blob([NEW_PREFIX + bytesToBase64(payload)], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "serren-vault.txt";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    showStatus("encryptStatus", "Encryption complete. Keep the downloaded file and master password separately.");
+    document.getElementById("plainText").value = "";
+    document.getElementById("encryptKey").value = "";
+  } catch (error) {
+    showStatus("encryptStatus", "Encryption failed: " + (error && error.message ? error.message : "unknown error"), true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Encrypt and download vault file";
+  }
+}
+
+async function decryptFile() {
+  const input = document.getElementById("fileInput");
+  const password = document.getElementById("decryptKey").value;
+  const button = document.getElementById("decryptButton");
+  const resultSection = document.getElementById("resultSection");
+  clearStatus("decryptStatus");
+  clearStatus("copyStatus");
+  resultSection.style.display = "none";
+  document.getElementById("decryptedText").value = "";
+
+  if (!input.files || input.files.length === 0) {
+    return showStatus("decryptStatus", "Choose an encrypted vault file first.", true);
+  }
+  if (!password) return showStatus("decryptStatus", "Enter the master password.", true);
+
+  button.disabled = true;
+  button.textContent = "Decrypting…";
+  try {
+    getCrypto();
+    const content = (await input.files[0].text()).trim();
+    let salt, iv, ciphertext, iterations;
+
+    if (content.startsWith(NEW_PREFIX)) {
+      const payload = base64ToBytes(content.slice(NEW_PREFIX.length));
+      if (payload.length < 49 || payload[0] !== 2) throw new Error("Invalid or damaged vault file.");
+      iterations = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(1, false);
+      if (iterations < 100000 || iterations > 2000000) throw new Error("Unsupported key-derivation settings.");
+      salt = payload.slice(5, 21);
+      iv = payload.slice(21, 33);
+      ciphertext = payload.slice(33);
+    } else if (content.startsWith(LEGACY_PREFIX)) {
+      const payload = base64ToBytes(content.slice(LEGACY_PREFIX.length));
+      if (payload.length < 45) throw new Error("Invalid or damaged legacy vault file.");
+      salt = payload.slice(0, 16);
+      iv = payload.slice(16, 28);
+      ciphertext = payload.slice(28);
+      iterations = LEGACY_ITERATIONS;
+    } else {
+      throw new Error("Unrecognized file format.");
+    }
+
+    const key = await deriveKey(password, salt, iterations);
+    const plaintext = await getCrypto().subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+    document.getElementById("decryptedText").value = new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
+    resultSection.style.display = "block";
+    showStatus("decryptStatus", "Decryption successful.");
+    document.getElementById("decryptKey").value = "";
+  } catch (error) {
+    showStatus("decryptStatus", "Could not decrypt this file. The password may be incorrect, the file may be damaged, or the format may not be supported.", true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Decrypt and show text";
+  }
+}
+
+async function copyDecryptedText() {
+  const text = document.getElementById("decryptedText").value;
+  if (!text) return showStatus("copyStatus", "There is no decrypted text to copy.", true);
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const field = document.getElementById("decryptedText");
+      field.focus();
+      field.select();
+      if (!document.execCommand("copy")) throw new Error("Copy command unavailable");
+    }
+    showStatus("copyStatus", "Copied to clipboard. Clear the displayed text when you are finished.");
+  } catch {
+    showStatus("copyStatus", "Automatic copying is unavailable here. Select the text and copy it manually.", true);
+  }
+}
+
+document.getElementById("encryptButton").addEventListener("click", encryptAndDownload);
+document.getElementById("decryptButton").addEventListener("click", decryptFile);
+document.getElementById("copyButton").addEventListener("click", copyDecryptedText);
+</script>
+</body>
+</html>
